@@ -1,0 +1,30 @@
+version: 0.2
+env:
+  variables:
+    IMAGE_REPO_NAME: "eks-hello"
+    K8S_NAMESPACE: "default"
+    K8S_DEPLOYMENT: "webapp-deployment"
+phases:
+  pre_build:
+    commands:
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+      - REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - REPOSITORY_URI=$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+      - echo "Using cluster ${EKS_CLUSTER_NAME}..."
+      - aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$REGION"
+  build:
+    commands:
+      - docker build -t $REPOSITORY_URI:$IMAGE_TAG ./app
+  post_build:
+    commands:
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - sed -e "s|IMAGE_URI|$REPOSITORY_URI:$IMAGE_TAG|g" k8s/deployment.yaml > k8s/deployment.rendered.yaml
+      - kubectl apply -f k8s/deployment.rendered.yaml -n $K8S_NAMESPACE
+      - kubectl apply -f k8s/service.yaml -n $K8S_NAMESPACE
+      - kubectl rollout status deployment/$K8S_DEPLOYMENT -n $K8S_NAMESPACE
+artifacts:
+  files:
+    - k8s/deployment.rendered.yaml
